@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.env
+
+# LanceDB vector database (large binary files)
+lance_db/
+
+# Node
+web/node_modules/
+web/.next/
+web/.env.local
+
+# API keys
+api_key.txt
+
+# OS
+.DS_Store
+Thumbs.db
