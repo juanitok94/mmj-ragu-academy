@@ -1,25 +1,25 @@
 """
-MMJ RAGu Academy — Ingestion Pipeline (LanceDB version)
-Reads corpus files, chunks them, embeds with sentence-transformers,
+MMJ RAGu Academy — Ingestion Pipeline (Voyage-3 Embeddings)
+Reads corpus files, chunks them, embeds with voyageai voyage-3,
 and stores in LanceDB for retrieval.
 Run this once (or whenever corpus changes).
 """
 
 import os
 import glob
+import time
 import lancedb
-import pyarrow as pa
-from sentence_transformers import SentenceTransformer
+import voyageai
 
 # ── Config ────────────────────────────────────────────────────
 CORPUS_ROOT   = r"C:\MMJ-Corpus"
 LANCE_PATH    = r"C:\MMJ-Corpus\lance_db"
 TABLE_NAME    = "mmj_corpus"
-CHUNK_SIZE    = 500   # words per chunk (default)
-CHUNK_OVERLAP = 50    # words overlap between chunks
-EMBED_MODEL   = "all-MiniLM-L6-v2"
+CHUNK_SIZE    = 500
+CHUNK_OVERLAP = 50
+EMBED_MODEL   = "voyage-3"
+BATCH_SIZE    = 8
 
-# Folders to ingest
 INGEST_FOLDERS = [
     "01-wikipedia",
     "02-interviews",
@@ -29,12 +29,10 @@ INGEST_FOLDERS = [
     "08-john-kean",
 ]
 
-# Folders that need line-by-line chunking instead of word chunking
 LINE_CHUNK_FOLDERS = {"04-setlists"}
 
 # ── Chunkers ─────────────────────────────────────────────────
 def chunk_text(text, chunk_size=CHUNK_SIZE, overlap=CHUNK_OVERLAP):
-    """Standard word-based chunking with overlap."""
     words = text.split()
     chunks = []
     start = 0
@@ -47,10 +45,6 @@ def chunk_text(text, chunk_size=CHUNK_SIZE, overlap=CHUNK_OVERLAP):
     return chunks
 
 def chunk_by_lines(text, lines_per_chunk=20):
-    """
-    Line-based chunking for structured data like song stats.
-    Groups lines into small chunks so individual songs are retrievable.
-    """
     lines = [l.strip() for l in text.split("\n") if l.strip()]
     chunks = []
     for i in range(0, len(lines), lines_per_chunk):
@@ -59,15 +53,29 @@ def chunk_by_lines(text, lines_per_chunk=20):
             chunks.append(chunk)
     return chunks
 
+# ── Embedder ─────────────────────────────────────────────────
+def embed_texts(vo_client, texts):
+    all_embeddings = []
+    for i in range(0, len(texts), BATCH_SIZE):
+        batch = texts[i:i + BATCH_SIZE]
+        result = vo_client.embed(batch, model=EMBED_MODEL, input_type="document")
+        all_embeddings.extend(result.embeddings)
+        print(f"    Embedded {min(i + BATCH_SIZE, len(texts))}/{len(texts)} chunks...")
+        time.sleep(0.3)
+    return all_embeddings
+
 # ── Main ──────────────────────────────────────────────────────
 def main():
     print("=" * 55)
-    print("  MMJ RAGu Academy — Ingestion Pipeline (LanceDB)")
+    print("  MMJ RAGu Academy — Ingestion Pipeline (voyage-3)")
     print("=" * 55)
 
-    print(f"\nLoading embedding model: {EMBED_MODEL}")
-    model = SentenceTransformer(EMBED_MODEL)
-    print("  Model ready.")
+    api_key = os.environ.get("VOYAGE_API_KEY")
+    if not api_key:
+        raise ValueError("VOYAGE_API_KEY environment variable not set")  # fixed: was incorrectly saying ANTHROPIC_API_KEY
+
+    vo_client = voyageai.Client(api_key=api_key)
+    print("\nVoyage AI client ready.")
 
     print(f"\nConnecting to LanceDB at {LANCE_PATH}...")
     db = lancedb.connect(LANCE_PATH)
@@ -101,10 +109,7 @@ def main():
                     print(f"    ✗ {filename} — empty, skipping")
                     continue
 
-                if use_line_chunks:
-                    chunks = chunk_by_lines(text, lines_per_chunk=20)
-                else:
-                    chunks = chunk_text(text)
+                chunks = chunk_by_lines(text) if use_line_chunks else chunk_text(text)
 
                 if not chunks:
                     continue
@@ -129,27 +134,28 @@ def main():
         return
 
     total_chunks = len(all_records)
-    print(f"\nEmbedding {total_chunks} chunks...")
+    print(f"\nEmbedding {total_chunks} chunks with {EMBED_MODEL}...")
     texts = [r["text"] for r in all_records]
-    embeddings = model.encode(texts, show_progress_bar=True, batch_size=32)
+    embeddings = embed_texts(vo_client, texts)
 
     print("\nWriting to LanceDB...")
-    records = []
-    for i, record in enumerate(all_records):
-        records.append({
-            "id":       record["id"],
-            "text":     record["text"],
-            "source":   record["source"],
-            "folder":   record["folder"],
-            "chunk_id": record["chunk_id"],
-            "vector":   embeddings[i].tolist(),
-        })
+    records = [
+        {
+            "id":       r["id"],
+            "text":     r["text"],
+            "source":   r["source"],
+            "folder":   r["folder"],
+            "chunk_id": r["chunk_id"],
+            "vector":   embeddings[i],
+        }
+        for i, r in enumerate(all_records)
+    ]
 
     db.create_table(TABLE_NAME, data=records)
 
     print(f"\n{'=' * 55}")
     print(f"  Done! {total_files} files → {total_chunks} chunks embedded.")
-    print(f"  Database: {LANCE_PATH}")
+    print(f"  Model: {EMBED_MODEL} | DB: {LANCE_PATH}")
     print(f"{'=' * 55}")
 
 if __name__ == "__main__":

@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: mmj-ragu-academy-api
+    runtime: python
+    region: oregon
+    plan: free
+    rootDir: .
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn mmj_api:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false        # set manually in Render dashboard
+      - key: VOYAGE_API_KEY
+        sync: false        # set manually in Render dashboard
+      - key: LANCE_PATH
+        value: ./lance_db  # relative to repo root, committed to Git
