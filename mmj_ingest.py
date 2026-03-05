@@ -6,10 +6,14 @@ Run this once (or whenever corpus changes).
 """
 
 import os
+import sys
 import glob
 import time
 import lancedb
 import voyageai
+
+if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 # ── Config ────────────────────────────────────────────────────
 CORPUS_ROOT   = r"C:\MMJ-Corpus"
@@ -26,6 +30,7 @@ INGEST_FOLDERS = [
     "03-reviews",
     "04-setlists",
     "05-albums",
+    "07-social",
     "08-john-kean",
 ]
 
@@ -72,7 +77,7 @@ def main():
 
     api_key = os.environ.get("VOYAGE_API_KEY")
     if not api_key:
-        raise ValueError("VOYAGE_API_KEY environment variable not set")  # fixed: was incorrectly saying ANTHROPIC_API_KEY
+        raise ValueError("VOYAGE_API_KEY environment variable not set")
 
     vo_client = voyageai.Client(api_key=api_key)
     print("\nVoyage AI client ready.")
@@ -80,16 +85,20 @@ def main():
     print(f"\nConnecting to LanceDB at {LANCE_PATH}...")
     db = lancedb.connect(LANCE_PATH)
 
-    if TABLE_NAME in db.list_tables():
+    # Unconditional drop — try/except handles case where table doesn't exist
+    try:
         db.drop_table(TABLE_NAME)
         print("  Cleared existing table.")
+    except Exception:
+        print("  No existing table to clear.")
 
     all_records = []
     total_files = 0
 
     for folder in INGEST_FOLDERS:
         folder_path = os.path.join(CORPUS_ROOT, folder)
-        files = glob.glob(os.path.join(folder_path, "*.txt"))
+        # recursive=True picks up all subfolders (e.g. 04-setlists\official\)
+        files = glob.glob(os.path.join(folder_path, "**", "*.txt"), recursive=True)
 
         if not files:
             print(f"\n  [{folder}] — no files found, skipping")
@@ -151,7 +160,8 @@ def main():
         for i, r in enumerate(all_records)
     ]
 
-    db.create_table(TABLE_NAME, data=records)
+    # mode="overwrite" as safety net in case drop didn't fully clear
+    db.create_table(TABLE_NAME, data=records, mode="overwrite")
 
     print(f"\n{'=' * 55}")
     print(f"  Done! {total_files} files → {total_chunks} chunks embedded.")
